@@ -1,0 +1,57 @@
+name: Text PDF Compress
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_kb:
+        description: "Final size in KB (35 pages ke liye 150-200 practical hai)"
+        default: "200"
+
+permissions:
+  contents: write
+
+jobs:
+  compress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ghostscript && pip install img2pdf
+
+      - name: Compress
+        env:
+          T: ${{ github.event.inputs.target_kb }}
+        run: |
+          mkdir -p compressed
+          max=$(( T * 1024 ))
+          for f in *.pdf; do
+            [ -f "$f" ] || continue
+            best="$f"; bs=$(stat -c%s "$f")
+            # device | DPI | JPEG quality  (gentle -> extreme)
+            for lv in "jpeggray 110 40" "jpeggray 100 30" "jpeggray 90 25" "jpeggray 80 20" "jpeggray 70 15" "tiffg4 150 0" "tiffg4 120 0" "tiffg4 100 0"; do
+              set -- $lv
+              rm -rf p; mkdir p
+              gs -q -dNOPAUSE -dBATCH -sDEVICE=$1 -r$2 -dJPEGQ=$3 \
+                 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 \
+                 -sOutputFile=p/%03d.img "$f" || continue
+              img2pdf -s ${2}dpi -o tmp.pdf p/*.img 2>/dev/null || continue
+              s=$(stat -c%s tmp.pdf)
+              echo "$f | $1 ${2}dpi q$3 -> $((s/1024)) KB"
+              [ "$s" -lt "$bs" ] && { cp tmp.pdf best.pdf; best=best.pdf; bs=$s; }
+              [ "$bs" -le "$max" ] && break
+            done
+            cp "$best" "compressed/${f%.pdf}-compressed.pdf"
+            echo "RESULT $f -> $((bs/1024)) KB"
+          done
+          rm -rf p tmp.pdf best.pdf
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compressed-pdfs
+          path: compressed/
+
+      - run: |
+          git config user.name github-actions
+          git config user.email actions@github.com
+          git add compressed/
+          git commit -m "Add compressed PDFs" || echo "Nothing to commit"
+          git push
